@@ -6,11 +6,9 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/golang-jwt/jwt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -19,14 +17,7 @@ var (
 	db  *gorm.DB
 	rdb *redis.Client
 	ctx = context.Background()
-	jwtKey = []byte("secret_key") // Use a secure key in production
 )
-
-type User struct {
-	ID       uint   `gorm:"primaryKey"`
-	Username string `gorm:"unique"`
-	Password string
-}
 
 type Message struct {
 	ID        uint      `gorm:"primaryKey"`
@@ -43,7 +34,7 @@ func init() {
 	if err != nil {
 		log.Fatalf("Failed to connect to DB: %v", err)
 	}
-	db.AutoMigrate(&User{}, &Message{})
+	db.AutoMigrate(&Message{})
 
 	rdb = redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
 	if _, err := rdb.Ping(ctx).Result(); err != nil {
@@ -51,22 +42,39 @@ func init() {
 	}
 }
 
-func generateJWT(username string) (string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"username": username,
-		"exp":      time.Now().Add(24 * time.Hour).Unix(),
-	})
-	return token.SignedString(jwtKey)
+// Cleanup old messages
+func cleanupOldMessages() {
+	threshold := time.Now().AddDate(0, 0, -30)
+	result := db.Where("created_at < ?", threshold).Delete(&Message{})
+	log.Printf("Cleaned up %d old messages
+", result.RowsAffected)
+}
+
+// Analyze messages
+func analyzeMessages() {
+	var results []struct {
+		UserID uint
+		Count  int
+	}
+	db.Raw("SELECT user_id, COUNT(*) as count FROM messages GROUP BY user_id").Scan(&results)
+	for _, result := range results {
+		log.Printf("User %d has %d messages
+", result.UserID, result.Count)
+	}
 }
 
 func main() {
-	http.HandleFunc("/api/register", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Register Endpoint"))
+	http.HandleFunc("/api/cleanup", func(w http.ResponseWriter, r *http.Request) {
+		cleanupOldMessages()
+		w.Write([]byte("Cleanup completed."))
 	})
-	http.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Login Endpoint"))
+
+	http.HandleFunc("/api/analyze", func(w http.ResponseWriter, r *http.Request) {
+		analyzeMessages()
+		w.Write([]byte("Analysis completed."))
 	})
+
 	log.Println("Server started on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
-        
+    
